@@ -8,9 +8,10 @@
             ["./data.json$default" :as data] ;; relative path, json import
             ["./Test" :refer [test]] ;; resolve cljs file
             ["./tailwind.css"]
-            ))
+            [bar :refer [bar]]))
 
 (test)
+(bar)
 (foo/debug :main "Hello from main.cljs")
 (js/console.log data)
 (def root (ReactDOM/createRoot (js/document.getElementById "root")))
