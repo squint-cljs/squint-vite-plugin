@@ -1,11 +1,14 @@
-import { defineConfig } from 'vite'
+import { defineConfig } from "vite";
 import squint from "vite-plugin-squint";
-import react from '@vitejs/plugin-react'
+import react from "@vitejs/plugin-react";
+import path from "path";
 
 // https://vitejs.dev/config/
 export default defineConfig({
-  plugins: [
-    squint(),
-    react()
-  ],
-})
+  resolve: {
+    alias: {
+      "@": path.resolve(__dirname, "./src"),
+    },
+  },
+  plugins: [squint(), react()],
+});

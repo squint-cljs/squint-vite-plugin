@@ -1,60 +1,131 @@
-import { compileString } from "squint-cljs";
+import { compileString } from "squint-cljs/compiler/node";
 import path, { dirname } from "path";
 import fs from "fs";
 
+function hasExtension(filePath) {
+  return path.extname(filePath).length > 0;
+}
+
+function isFile(filePath) {
+  const stats = fs.statSync(filePath, { throwIfNoEntry: false });
+  return stats?.isFile();
+}
+
+function isLibraryImport(importPath) {
+  return !(importPath.startsWith(".") || importPath.startsWith("/"));
+}
+
+function createLogger() {
+  return process.env.DEBUG ? console.log : () => {};
+}
+
+/**
+ * Vite plugin for compiling ClojureScript files to JavaScript using Squint.
+ *
+ * @param {Object} [opts={}] - Options for the plugin.
+ * @param {string} [opts.outputDir="squint_out"] - Relative output directory for compiled files.
+ * @returns {Array} Array containing the Squint plugin configuration.
+ */
 export default function viteSquint(opts = {}) {
+  let outputDir = opts.outputDir || "squint_out";
+  let projectRoot;
+  let srcFileMap = {}; // {sourceFile: [compiledFile, srcFileModTime]}
+  let compiledFileMap = {}; // {compiledFile: sourceFile}
+  const log = createLogger();
+
+  async function compileFile(srcFile) {
+    const stats = fs.statSync(srcFile);
+    const [outFile, modTime] = srcFileMap[srcFile] || [];
+    if (!outFile) {
+      return;
+    }
+    // we compile the file if the file has changed, we need to check if the
+    // file has changed otherwise we end up in an infinite loop.
+    if (modTime < stats.mtimeMs) {
+      // instead of loading the source and compiling here, we would call
+      // the squint compiler to compile the file and load the compiled file
+      // and (future) source mapping.
+      log("compiling cljs file", srcFile);
+      const code = fs.readFileSync(srcFile, "utf-8");
+      const compiled = await compileString(code, { "in-file": srcFile });
+      fs.mkdirSync(dirname(outFile), { recursive: true });
+      fs.writeFileSync(outFile, compiled.javascript);
+      srcFileMap[srcFile] = [outFile, stats.mtimeMs];
+    }
+  }
+
   const squint = {
     name: "squint_compile",
     enforce: "pre",
-    async load(id) {
-      // the resolveId adds the .jsx extension
-      if (/\.cljs.jsx$/.test(id)) {
-        // for cljs files, we just need to load and compile
-        // TODO: macros
-        // TODO: squint source mapping
-        const file = id.replace(/.jsx$/, "");
-        const code = await fs.promises.readFile(file, "utf-8");
-        const compiled = compileString(code);
-        return { code: compiled, map: null };
-      }
+    configResolved(config) {
+      projectRoot = config.root;
     },
-    resolveId(id, importer, options) {
-      if (/\.cljs.jsx$/.test(id)) {
-        // Vite can prompt the plugin to resolve modules that it has already
-        // resolved. As we have already resolved the module and added the
-        // extension to the id we just need to return the absolute resolveId again.
-        return path.resolve(dirname(importer), id);
+    async resolveId(id, importer, options) {
+      if (options.scan) {
+        return null; // we don't do anything during vites initial scan.
       }
-      if (/\.cljs$/.test(id)) {
-        // For cljs files we need to do the following:
-        // absolutize the path, this makes it easier for load and other plugins
-        // append .jsx so that other plugins can pick it up
-        const absolutePath = path.resolve(dirname(importer), id);
-        if (options.scan) {
-          // Vite supports the concept of virtual modules, which are not direct
-          // files on disk but dynamically generated contents that Vite and its
-          // plugins can work with. We return a virtual module identifier
-          // (prefixed with \0 to denote its virtual nature), we effectively
-          // communicate to Vite and other plugins in the ecosystem that the
-          // module is managed by the plugin and should be treated differently
-          // from regular file-based modules. As `.cljs.jsx` files are not real.
-          // https://vitejs.dev/guide/api-plugin#virtual-modules-convention
-          return "\0" + absolutePath + ".jsx";
+      if (id.startsWith("\x00")) {
+        return null; // ignore virtual modules
+      }
+      const srcFile = compiledFileMap[importer];
+      // if there is an srcFile, we resolve relative to that file.
+      const absPath = path.resolve(dirname(srcFile || importer), id);
+      // if there is no extension, we check to see if we can resolve a `.cljs` file
+      if (!hasExtension(id)) {
+        const resolveCljsFile = `${absPath}.cljs`;
+        if (isFile(resolveCljsFile)) {
+          log("resolving import as cljs file", id);
+          id = resolveCljsFile;
         }
-        return absolutePath + ".jsx";
+      }
+      // we resolve the `.cljs` file that we want to compile, to the `outputDir`+`filename.jsx`
+      if (/\.cljs$/.test(id)) {
+        const srcFileAbsPath = path.resolve(dirname(srcFile || importer), id);
+        const relPath = path
+          .relative(projectRoot, srcFileAbsPath)
+          .replace(/\.cljs$/, ".jsx");
+        const outPath = `${projectRoot}/${outputDir}/${relPath}`;
+        log("resolving cljs->jsx", srcFileAbsPath, outPath);
+        // we keep track of the source file and the compiled file
+        srcFileMap[srcFileAbsPath] = [outPath, 0];
+        compiledFileMap[outPath] = srcFileAbsPath;
+        compileFile(srcFileAbsPath);
+        return outPath;
+      }
+      // We need to convert files that are imported from cljs to absolute paths
+      // as we compile the `.jsx` files in a different directory which breaks
+      // the relative imports.
+      if (!/\.cljs$/.test(id) && srcFile) {
+        if (!isLibraryImport(id)) {
+          log("resolving import from", srcFile, "to absolute path", absPath);
+          return absPath;
+        }
       }
     },
-    handleHotUpdate({file, server, modules }) {
-      if (/\.cljs$/.test(file)) {
-        // this needs to be the same id returned by resolveId this is what
-        // vite uses as the modules identifier
-        const resolveId = file + ".jsx";
-        const module = server.moduleGraph.getModuleById(resolveId);
+    async load(id) {
+      const srcFile = compiledFileMap[id];
+      if (!srcFile) {
+        return null;
+      }
+      compileFile(srcFile);
+      // load the file
+      log("loading compiled cljs file", id);
+      const code = fs.readFileSync(id, "utf-8");
+      return { code, map: null };
+    },
+    handleHotUpdate({ file, server, modules }) {
+      // `resolveId` returns the `compiledFile` so we need to use that reference
+      // to trigger the hot reloads. The input `file` will be the file that
+      // you are changing, the `cljs` file.
+      let [compiledFile] = srcFileMap[file] || [];
+      if (compiledFile) {
+        const module = server.moduleGraph.getModuleById(compiledFile);
         if (module) {
+          log("HMR triggered by", file, "updating", compiledFile);
           // invalidate dependants
-          server.moduleGraph.onFileChange(resolveId);
+          server.moduleGraph.onFileChange(compiledFile);
           // hot reload
-          return [...modules, module ]
+          return [...modules, module];
         }
         return modules;
       }

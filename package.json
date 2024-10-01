@@ -13,7 +13,7 @@
     "vite": ">2.0.0-0"
   },
   "dependencies": {
-    "squint-cljs": "^0.7.100"
+    "squint-cljs": "file:../squint"
   },
   "devDependencies": {
     "vite": "latest"

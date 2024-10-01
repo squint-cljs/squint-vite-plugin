@@ -17,7 +17,8 @@
             [:img {:src react-logo :className "logo react" :alt "React logo"}]]]
           [:h1 "Vite + Squint + React"]
           [:div {:className "card"}
-           [:button {:onClick #(set-count (inc count))}
+           ;; Change className or `count is ` text to test HMR & tailwind HMR
+           [:button {:onClick #(set-count (inc count)) :className "text-green-300"}
             "count is " count]
            [:p "Edit " [:code "src/App.cljs"] " and save to test HMR"]]
           [:p {:className "read-the-docs"}
