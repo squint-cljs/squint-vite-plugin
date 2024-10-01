@@ -1,5 +1,5 @@
 (ns main
-  ;;(:require-macros [foo :as foo])
+  (:require-macros [foo :as foo])
   (:require ["react" :as React :refer [StrictMode]]
             ["react-dom/client" :as ReactDOM]
             ["@/App.cljs" :refer [App]] ;; alias
@@ -11,7 +11,7 @@
             ))
 
 (test)
-;;(foo/debug :main "Hello from main.cljs")
+(foo/debug :main "Hello from main.cljs")
 (js/console.log data)
 (def root (ReactDOM/createRoot (js/document.getElementById "root")))
 (.render root #jsx [StrictMode [App]])
