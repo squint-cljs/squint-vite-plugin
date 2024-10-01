@@ -33,16 +33,39 @@ export default function viteSquint(opts = {}) {
   let compiledFileMap = {}; // {compiledFile: sourceFile}
   const log = createLogger();
 
+  async function compileFile(srcFile) {
+    const stats = fs.statSync(srcFile);
+    const [outFile, modTime] = srcFileMap[srcFile] || [];
+    if (!outFile) {
+      return;
+    }
+    // we compile the file if the file has changed, we need to check if the
+    // file has changed otherwise we end up in an infinite loop.
+    if (modTime < stats.mtimeMs) {
+      // instead of loading the source and compiling here, we would call
+      // the squint compiler to compile the file and load the compiled file
+      // and (future) source mapping.
+      log("compiling cljs file", srcFile);
+      const code = fs.readFileSync(srcFile, "utf-8");
+      const compiled = await compileString(code, { "in-file": srcFile });
+      fs.mkdirSync(dirname(outFile), { recursive: true });
+      fs.writeFileSync(outFile, compiled.javascript);
+      srcFileMap[srcFile] = [outFile, stats.mtimeMs];
+    }
+  }
+
   const squint = {
     name: "squint_compile",
     enforce: "pre",
     configResolved(config) {
       projectRoot = config.root;
     },
-    resolveId(id, importer, options) {
-      // we don't do anything during vites initial scan.
+    async resolveId(id, importer, options) {
       if (options.scan) {
-        return null;
+        return null; // we don't do anything during vites initial scan.
+      }
+      if (id.startsWith("\x00")) {
+        return null; // ignore virtual modules
       }
       const srcFile = compiledFileMap[importer];
       // if there is an srcFile, we resolve relative to that file.
@@ -66,6 +89,7 @@ export default function viteSquint(opts = {}) {
         // we keep track of the source file and the compiled file
         srcFileMap[srcFileAbsPath] = [outPath, 0];
         compiledFileMap[outPath] = srcFileAbsPath;
+        compileFile(srcFileAbsPath);
         return outPath;
       }
       // We need to convert files that are imported from cljs to absolute paths
@@ -83,21 +107,7 @@ export default function viteSquint(opts = {}) {
       if (!srcFile) {
         return null;
       }
-      const stats = fs.statSync(srcFile);
-      const modTime = srcFileMap[srcFile]?.[1] || 0;
-      // we compile the file if the file has changed, we need to check if the
-      // file has changed otherwise we end up in an infinite loop.
-      if (modTime < stats.mtimeMs) {
-        // instead of loading the source and compiling here, we would call
-        // the squint compiler to compile the file and load the compiled file
-        // and (future) source mapping.
-        log("compiling cljs file", srcFile);
-        const code = fs.readFileSync(srcFile, "utf-8");
-        const compiled = await compileString(code, { "in-file": srcFile });
-        fs.mkdirSync(dirname(id), { recursive: true });
-        fs.writeFileSync(id, compiled.javascript);
-        srcFileMap[srcFile] = [id, stats.mtimeMs];
-      }
+      compileFile(srcFile);
       // load the file
       log("loading compiled cljs file", id);
       const code = fs.readFileSync(id, "utf-8");
